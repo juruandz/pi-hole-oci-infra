@@ -1,15 +1,23 @@
 #!/bin/bash
-set -e
+set -euo pipefail
+
+# Function to log and exit on error
+error_exit() {
+    echo "ERROR: $1" >&2
+    exit 1
+}
+
+trap 'error_exit "Script failed at line $LINENO"' ERR
 
 # Update system
-apt-get update
-apt-get upgrade -y
+apt-get update || error_exit "Failed to update apt cache"
+apt-get upgrade -y || error_exit "Failed to upgrade packages"
 
 # Install required packages
-apt-get install -y curl git
+apt-get install -y curl git || error_exit "Failed to install required packages"
 
 # Create maintenance scripts directory
-mkdir -p /usr/local/bin
+mkdir -p /usr/local/bin || error_exit "Failed to create /usr/local/bin directory"
 
 # Create reboot check script
 cat > /usr/local/bin/nightly_reboot_check.sh << 'EOF'
@@ -48,10 +56,10 @@ echo "--- $(date) - Nightly reboot check finished ---" >> $LOGFILE
 EOF
 
 # Make scripts executable
-chmod +x /usr/local/bin/nightly_reboot_check.sh
+chmod +x /usr/local/bin/nightly_reboot_check.sh || error_exit "Failed to make nightly_reboot_check.sh executable"
 
 # Install required packages for scripts
-apt-get install -y needrestart jq dnsutils
+apt-get install -y needrestart jq dnsutils || error_exit "Failed to install script dependencies"
 
 # Set up cron jobs (run as root since shutdown requires root permissions)
 sudo bash -c 'crontab -l 2>/dev/null; echo "0 3 * * 6 /usr/local/bin/nightly_reboot_check.sh"' | sort -u | sudo crontab -

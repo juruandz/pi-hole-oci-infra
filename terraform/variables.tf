@@ -26,6 +26,12 @@ variable "ssh_public_key" {
   type        = string
 }
 
+variable "ssh_private_key" {
+  description = "The SSH private key to use for provisioning"
+  type        = string
+  sensitive   = true
+}
+
 variable "allowed_ip" {
   description = "The IP address allowed to access the instance (format: IP/32)"
   type        = string

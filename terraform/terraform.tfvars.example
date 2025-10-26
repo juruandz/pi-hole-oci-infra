@@ -5,7 +5,8 @@ availability_domain = "1"  # Check your region's availability domains
 
 # Security
 allowed_ip        = "YOUR_IP/32"  # Replace with your IP address in CIDR notation (e.g., "78.157.68.185/32")
-ssh_public_key    = "ssh-rsa AAAA..."  # Replace with your SSH public key
+ssh_public_key    = file("path/to/your/ssh-key.pub")  # Replace with path to your SSH public key file
+ssh_private_key   = file("path/to/your/ssh-key")      # Replace with path to your SSH private key file (used for provisioning)
 ddns_host         = "yourhost.com"  # Replace with your DDNS hostname (leave empty "" if not using DDNS)
 
 # Optional overrides

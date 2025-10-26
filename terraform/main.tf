@@ -167,22 +167,34 @@ resource "oci_core_instance" "pihole_instance" {
 
   metadata = {
     ssh_authorized_keys = var.ssh_public_key
-    # user_data = base64encode(
-    #   replace(
-    #     replace(
-    #       replace(
-    #         file("${path.module}/../scripts/setup.sh"),
-    #         "SECURITY_LIST_OCID_PLACEHOLDER",
-    #         oci_core_security_list.security_list.id
-    #       ),
-    #       "DDNS_HOST_PLACEHOLDER",
-    #       var.ddns_host
-    #     ),
-    #     "REGION_PLACEHOLDER",
-    #     var.region
-    #   )
-    # )
   }
 
   display_name = "pihole-wireguard-server"
+
+  # Run setup script and fail terraform if it errors
+  provisioner "file" {
+    source      = "${path.module}/../scripts/setup.sh"
+    destination = "/tmp/setup.sh"
+
+    connection {
+      type        = "ssh"
+      user        = "ubuntu"
+      private_key = var.ssh_private_key
+      host        = self.private_ip
+    }
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "chmod +x /tmp/setup.sh",
+      "bash /tmp/setup.sh"
+    ]
+
+    connection {
+      type        = "ssh"
+      user        = "ubuntu"
+      private_key = var.ssh_private_key
+      host        = self.private_ip
+    }
+  }
 }
