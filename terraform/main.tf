@@ -24,7 +24,7 @@ resource "oci_core_route_table" "route_table" {
 }
 
 # Custom Security List
-resource "oci_core_security_list" "security_list" {
+resource "oci_core_security_list" "ddns_security_list" {
   compartment_id = var.compartment_id
   vcn_id         = oci_core_vcn.pihole_vcn.id
   display_name   = "pihole-security-list"
@@ -59,45 +59,45 @@ resource "oci_core_security_list" "security_list" {
 }
 
 # WireGuard Security List
-resource "oci_core_security_list" "wireguard_security_list" {
+resource "oci_core_security_list" "main_security_list" {
   compartment_id = var.compartment_id
   vcn_id         = oci_core_vcn.pihole_vcn.id
   display_name   = "wireguard-security-list"
 
-  # # Allow SSH from anywhere
-  # ingress_security_rules {
-  #   protocol  = "6" # TCP
-  #   source    = "0.0.0.0/0"
-  #   stateless = false
+  # Allow SSH from anywhere
+  ingress_security_rules {
+    protocol  = "6" # TCP
+    source    = "0.0.0.0/0"
+    stateless = false
     
-  #   tcp_options {
-  #     min = 22
-  #     max = 22
-  #   }
-  # }
+    tcp_options {
+      min = 22
+      max = 22
+    }
+  }
 
-  # # Allow ICMP type 3 code 4 from anywhere
-  # ingress_security_rules {
-  #   protocol  = "1" # ICMP
-  #   source    = "0.0.0.0/0"
-  #   stateless = false
+  # Allow ICMP type 3 code 4 from anywhere
+  ingress_security_rules {
+    protocol  = "1" # ICMP
+    source    = "0.0.0.0/0"
+    stateless = false
     
-  #   icmp_options {
-  #     type = 3
-  #     code = 4
-  #   }
-  # }
+    icmp_options {
+      type = 3
+      code = 4
+    }
+  }
 
-  # # Allow ICMP type 3 (no code) from VCN
-  # ingress_security_rules {
-  #   protocol  = "1" # ICMP
-  #   source    = "10.0.0.0/16"
-  #   stateless = false
+  # Allow ICMP type 3 (no code) from VCN
+  ingress_security_rules {
+    protocol  = "1" # ICMP
+    source    = "10.0.0.0/16"
+    stateless = false
     
-  #   icmp_options {
-  #     type = 3
-  #   }
-  # }
+    icmp_options {
+      type = 3
+    }
+  }
 
   # Allow WireGuard VPN
   ingress_security_rules {
@@ -112,12 +112,12 @@ resource "oci_core_security_list" "wireguard_security_list" {
     }
   }
 
-  # # Allow all outbound traffic
-  # egress_security_rules {
-  #   destination = "0.0.0.0/0"
-  #   protocol    = "all"
-  #   stateless   = false
-  # }
+  # Allow all outbound traffic
+  egress_security_rules {
+    destination = "0.0.0.0/0"
+    protocol    = "all"
+    stateless   = false
+  }
 }
 
 # Subnet
@@ -129,8 +129,8 @@ resource "oci_core_subnet" "subnet" {
   dns_label      = "piholesubnet"
   
   security_list_ids = [
-    oci_core_security_list.security_list.id,
-    oci_core_security_list.wireguard_security_list.id
+    oci_core_security_list.ddns_security_list.id,
+    oci_core_security_list.main_security_list.id
   ]
   route_table_id    = oci_core_route_table.route_table.id
 }
@@ -166,35 +166,8 @@ resource "oci_core_instance" "pihole_instance" {
   }
 
   metadata = {
-    ssh_authorized_keys = var.ssh_public_key
+    ssh_authorized_keys = file("G:/My Drive/Tech/OCI/ssh-key-2025-10-11.key.pub")
   }
 
   display_name = "pihole-wireguard-server"
-
-  # Run setup script and fail terraform if it errors
-  provisioner "file" {
-    source      = "${path.module}/../scripts/setup.sh"
-    destination = "/tmp/setup.sh"
-
-    connection {
-      type        = "ssh"
-      user        = "ubuntu"
-      private_key = var.ssh_private_key
-      host        = self.private_ip
-    }
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "chmod +x /tmp/setup.sh",
-      "bash /tmp/setup.sh"
-    ]
-
-    connection {
-      type        = "ssh"
-      user        = "ubuntu"
-      private_key = var.ssh_private_key
-      host        = self.private_ip
-    }
-  }
 }
