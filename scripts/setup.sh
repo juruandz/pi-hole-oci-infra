@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+set -eu
 
 # Set environment variables to suppress interactive prompts
 export DEBIAN_FRONTEND=noninteractive
