@@ -1,0 +1,12 @@
+# Required variables
+compartment_id     = "ocid1.compartment.oc1..example"  # Replace with your compartment OCID
+region            = "eu-stockholm-1"
+availability_domain = "1"  # Check your region's availability domains
+
+# Security
+allowed_ip        = "YOUR_IP/32"  # Replace with your IP address in CIDR notation (e.g., "78.157.68.185/32")
+ssh_public_key    = "ssh-rsa AAAA..."  # Replace with your SSH public key
+ddns_host         = "yourhost.com"  # Replace with your DDNS hostname (leave empty "" if not using DDNS)
+
+# Optional overrides
+# instance_shape   = "VM.Standard.E2.1.Micro"  # Default value, can be changed if needed
