@@ -27,13 +27,18 @@ resource "oci_core_route_table" "route_table" {
 resource "oci_core_security_list" "ddns_security_list" {
   compartment_id = var.compartment_id
   vcn_id         = oci_core_vcn.pihole_vcn.id
-  display_name   = "pihole-security-list"
+  display_name   = "ddns_security_list"
 
-  # Allow all TCP from specific IP
+  # Allow TCP ports 443 and 53 from specific IP
   ingress_security_rules {
     protocol  = "6" # TCP
     source    = var.allowed_ip
     stateless = false
+
+    tcp_options {
+      min = 53
+      max = 443
+    }
   }
 
   # Allow all UDP from specific IP
@@ -41,6 +46,11 @@ resource "oci_core_security_list" "ddns_security_list" {
     protocol  = "17" # UDP
     source    = var.allowed_ip
     stateless = false
+
+    udp_options {
+      min = 53
+      max = 53
+    }
   }
 
   # Allow ICMP from specific IP
@@ -50,19 +60,13 @@ resource "oci_core_security_list" "ddns_security_list" {
     stateless = false
   }
 
-  # Allow all outbound traffic
-  egress_security_rules {
-    destination = "0.0.0.0/0"
-    protocol    = "all"
-    stateless   = false
-  }
 }
 
 # WireGuard Security List
 resource "oci_core_security_list" "main_security_list" {
   compartment_id = var.compartment_id
   vcn_id         = oci_core_vcn.pihole_vcn.id
-  display_name   = "wireguard-security-list"
+  display_name   = "main_security_list"
 
   # Allow SSH from anywhere
   ingress_security_rules {
