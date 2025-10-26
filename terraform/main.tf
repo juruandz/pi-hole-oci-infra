@@ -166,7 +166,7 @@ resource "oci_core_instance" "pihole_instance" {
   }
 
   metadata = {
-    ssh_authorized_keys = file("G:/My Drive/Tech/OCI/ssh-key-2025-10-11.key.pub")
+    ssh_authorized_keys = var.ssh_public_key
   }
 
   display_name = "pihole-wireguard-server"

@@ -24,6 +24,7 @@ variable "instance_shape" {
 variable "ssh_public_key" {
   description = "The SSH public key to use for the instance"
   type        = string
+  sensitive   = false
 }
 
 variable "ssh_private_key" {
