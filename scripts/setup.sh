@@ -20,6 +20,21 @@ NEEDRESTART_MODE=a apt-get upgrade -y || error_exit "Failed to upgrade packages"
 # Install required packages
 NEEDRESTART_MODE=a apt-get install -y curl git || error_exit "Failed to install required packages"
 
+# Configure iptables rules for IPv4
+
+# Function to add iptables rule if it doesn't exist
+add_iptables_rule() {
+    local rule="$1"
+    local error_msg="$2"
+    iptables -C INPUT $rule 2>/dev/null || iptables -A INPUT $rule || error_exit "$error_msg"
+}
+
+# Add rules for DNS, HTTP, and HTTPS
+add_iptables_rule "-p udp --dport 53 -j ACCEPT" "Failed to add UDP port 53 rule"
+add_iptables_rule "-p tcp --dport 53 -j ACCEPT" "Failed to add TCP port 53 rule"
+add_iptables_rule "-p tcp -m state --state NEW -m tcp --dport 443 -j ACCEPT" "Failed to add HTTPS rule"
+add_iptables_rule "-p tcp -m state --state NEW -m tcp --dport 80 -j ACCEPT" "Failed to add HTTP rule"
+
 # Create maintenance scripts directory
 mkdir -p /usr/local/bin || error_exit "Failed to create /usr/local/bin directory"
 
