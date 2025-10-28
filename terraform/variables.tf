@@ -36,7 +36,7 @@ variable "ssh_private_key" {
 variable "allowed_ip" {
   description = "The IP address allowed to access the instance (format: IP/32)"
   type        = string
-  default     = "0.0.0.0/0"  # Default to all IPs, but should be restricted in tfvars
+  default     = "0.0.0.0/0" # Default to all IPs, but should be restricted in tfvars
 }
 
 variable "ddns_host" {

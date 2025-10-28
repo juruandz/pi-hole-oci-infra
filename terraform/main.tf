@@ -6,6 +6,61 @@ resource "oci_core_vcn" "pihole_vcn" {
   dns_label      = "piholevcn"
 }
 
+resource "oci_core_security_list" "default_security_list" {
+  compartment_id = var.compartment_id
+  vcn_id         = oci_core_vcn.pihole_vcn.id
+  # manage_default_resource_id = oci_core_vcn.pihole_vcn.default_security_list_id
+  display_name = "default_security_list"
+
+  # Allow SSH from anywhere
+  ingress_security_rules {
+    protocol  = "6" # TCP
+    source    = "0.0.0.0/0"
+    stateless = false
+
+    tcp_options {
+      min = 22
+      max = 22
+    }
+  }
+
+  # Allow ICMP type 3 code 4 from anywhere
+  ingress_security_rules {
+    protocol  = "1" # ICMP
+    source    = "0.0.0.0/0"
+    stateless = false
+
+    icmp_options {
+      type = 3
+      code = 4
+    }
+  }
+
+  # Allow ICMP type 3 (no code) from VCN
+  ingress_security_rules {
+    protocol  = "1" # ICMP
+    source    = "10.0.0.0/16"
+    stateless = false
+
+    icmp_options {
+      type = 3
+    }
+  }
+
+  # Allow WireGuard VPN
+  ingress_security_rules {
+    protocol    = "17" # UDP
+    source      = "0.0.0.0/0"
+    stateless   = false
+    description = "WireGuard VPN"
+
+    udp_options {
+      min = 51820
+      max = 51820
+    }
+  }
+}
+
 resource "oci_core_internet_gateway" "internet_gateway" {
   compartment_id = var.compartment_id
   vcn_id         = oci_core_vcn.pihole_vcn.id
@@ -62,68 +117,6 @@ resource "oci_core_security_list" "ddns_security_list" {
 
 }
 
-# WireGuard Security List
-resource "oci_core_security_list" "main_security_list" {
-  compartment_id = var.compartment_id
-  vcn_id         = oci_core_vcn.pihole_vcn.id
-  display_name   = "main_security_list"
-
-  # Allow SSH from anywhere
-  ingress_security_rules {
-    protocol  = "6" # TCP
-    source    = "0.0.0.0/0"
-    stateless = false
-    
-    tcp_options {
-      min = 22
-      max = 22
-    }
-  }
-
-  # Allow ICMP type 3 code 4 from anywhere
-  ingress_security_rules {
-    protocol  = "1" # ICMP
-    source    = "0.0.0.0/0"
-    stateless = false
-    
-    icmp_options {
-      type = 3
-      code = 4
-    }
-  }
-
-  # Allow ICMP type 3 (no code) from VCN
-  ingress_security_rules {
-    protocol  = "1" # ICMP
-    source    = "10.0.0.0/16"
-    stateless = false
-    
-    icmp_options {
-      type = 3
-    }
-  }
-
-  # Allow WireGuard VPN
-  ingress_security_rules {
-    protocol    = "17" # UDP
-    source      = "0.0.0.0/0"
-    stateless   = false
-    description = "WireGuard VPN"
-    
-    udp_options {
-      min = 51820
-      max = 51820
-    }
-  }
-
-  # Allow all outbound traffic
-  egress_security_rules {
-    destination = "0.0.0.0/0"
-    protocol    = "all"
-    stateless   = false
-  }
-}
-
 # Subnet
 resource "oci_core_subnet" "subnet" {
   compartment_id = var.compartment_id
@@ -131,12 +124,12 @@ resource "oci_core_subnet" "subnet" {
   cidr_block     = "10.0.1.0/24"
   display_name   = "pihole-subnet"
   dns_label      = "piholesubnet"
-  
+
   security_list_ids = [
-    oci_core_security_list.ddns_security_list.id,
-    oci_core_security_list.main_security_list.id
+    oci_core_security_list.default_security_list.id,
+    oci_core_security_list.ddns_security_list.id
   ]
-  route_table_id    = oci_core_route_table.route_table.id
+  route_table_id = oci_core_route_table.route_table.id
 }
 
 # Get availability domains 
@@ -161,7 +154,7 @@ resource "oci_core_instance" "pihole_instance" {
 
   create_vnic_details {
     subnet_id        = oci_core_subnet.subnet.id
-    assign_public_ip = false  # We'll use the reserved public IP instead
+    assign_public_ip = false # We'll use the reserved public IP instead
   }
 
   source_details {
