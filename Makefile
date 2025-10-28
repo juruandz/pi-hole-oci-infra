@@ -1,4 +1,4 @@
-.PHONY: help init validate format plan apply destroy rebuild state output console clean
+.PHONY: help init validate format plan apply destroy rebuild state output console clean resources taint
 
 TERRAFORM_DIR := terraform
 TF := terraform
@@ -19,6 +19,8 @@ help:
 	@echo "  state      Show current terraform state"
 	@echo "  output     Show terraform outputs"
 	@echo "  console    Open terraform console for debugging"
+	@echo "  resources  List all managed resources"
+	@echo "  taint      Taint a resource (mark for recreation)"
 	@echo "  clean      Remove terraform state files"
 	@echo "  help       Display this help message"
 	@echo ""
@@ -105,6 +107,30 @@ console: check-prerequisites
 	@echo "Opening Terraform console..."
 	@echo "Type 'exit' to quit the console"
 	@cd $(TERRAFORM_DIR) && $(TF) console
+
+resources: check-prerequisites
+	@echo "Listing all managed resources..."
+	@cd $(TERRAFORM_DIR) && $(TF) state list
+
+taint: check-prerequisites
+	@if [ -z "$(RESOURCE)" ]; then \
+		echo "ERROR: RESOURCE variable not set"; \
+		echo "Usage: make taint RESOURCE=<resource_address>"; \
+		echo ""; \
+		echo "Available resources:"; \
+		cd $(TERRAFORM_DIR) && $(TF) state list; \
+		exit 1; \
+	fi
+	@echo "Tainting resource: $(RESOURCE)"
+	@echo "This resource will be destroyed and recreated on the next apply"
+	@read -p "Are you sure you want to taint '$(RESOURCE)'? Type 'yes' to confirm: " confirm; \
+	if [ "$$confirm" = "yes" ]; then \
+		cd $(TERRAFORM_DIR) && $(TF) taint $(RESOURCE); \
+		echo "Resource tainting successful"; \
+		echo "Use 'make plan' to see planned changes"; \
+	else \
+		echo "Taint cancelled"; \
+	fi
 
 rebuild: check-prerequisites
 	@echo "=========================================================="

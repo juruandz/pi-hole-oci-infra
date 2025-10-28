@@ -14,7 +14,6 @@ error_exit() {
 trap 'error_exit "Script failed at line $LINENO"' ERR
 
 # Update system with non-interactive options
-apt-get update || error_exit "Failed to update apt cache"
 NEEDRESTART_MODE=a apt-get upgrade -y || error_exit "Failed to upgrade packages"
 
 # Install required packages

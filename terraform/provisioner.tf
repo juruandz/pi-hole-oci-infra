@@ -15,6 +15,8 @@ resource "null_resource" "setup_provisioner" {
   provisioner "remote-exec" {
     inline = [
       "chmod +x /tmp/setup.sh",
+      "sudo apt-get update",
+      "sudo apt-get install dos2unix -y",
       "dos2unix /tmp/setup.sh || sed -i 's/\r$//' /tmp/setup.sh",
       "sudo bash /tmp/setup.sh"
     ]
