@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 set -eu
 
 # Set environment variables to suppress interactive prompts
@@ -18,7 +18,7 @@ apt-get update || error_exit "Failed to update apt cache"
 NEEDRESTART_MODE=a apt-get upgrade -y || error_exit "Failed to upgrade packages"
 
 # Install required packages
-NEEDRESTART_MODE=a apt-get install -y curl git || error_exit "Failed to install required packages"
+NEEDRESTART_MODE=a apt-get install -y curl git dos2unix || error_exit "Failed to install required packages"
 
 # Create maintenance scripts directory
 mkdir -p /usr/local/bin || error_exit "Failed to create /usr/local/bin directory"

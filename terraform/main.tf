@@ -59,6 +59,13 @@ resource "oci_core_security_list" "default_security_list" {
       max = 51820
     }
   }
+
+  # Allow all egress traffic (required for package downloads and internet access)
+  egress_security_rules {
+    protocol    = "all"
+    destination = "0.0.0.0/0"
+    stateless   = false
+  }
 }
 
 resource "oci_core_internet_gateway" "internet_gateway" {
@@ -113,6 +120,13 @@ resource "oci_core_security_list" "ddns_security_list" {
     protocol  = "1" # ICMP
     source    = var.allowed_ip
     stateless = false
+  }
+
+  # Allow all egress traffic (required for package downloads and internet access)
+  egress_security_rules {
+    protocol    = "all"
+    destination = "0.0.0.0/0"
+    stateless   = false
   }
 
 }
