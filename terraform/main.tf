@@ -178,6 +178,36 @@ resource "oci_core_instance" "pihole_instance" {
 
   metadata = {
     ssh_authorized_keys = var.ssh_public_key
+    user_data = base64encode(<<-EOF
+#cloud-config
+write_files:
+  - path: /etc/systemd/system/zram-swap.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Setup zram swap
+      After=network.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStartPre=/sbin/modprobe zram num_devices=1
+      ExecStart=/bin/sh -c "echo 524288000 > /sys/block/zram0/disksize && mkswap /dev/zram0 && swapon /dev/zram0"
+
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  - fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+  - chmod 600 /swapfile
+  - mkswap /swapfile
+  - swapon /swapfile
+  - echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  - sysctl -w vm.swappiness=10
+  - echo 'vm.swappiness=10' >> /etc/sysctl.conf
+  - systemctl daemon-reload
+  - systemctl enable --now zram-swap.service
+EOF
+    )
   }
 
   display_name = "pihole-wireguard-server"
