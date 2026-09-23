@@ -1,0 +1,18 @@
+# Line-ending policy: LF both in the repository and in the working tree.
+# `text=auto` only classifies a file as text if it contains no NUL byte,
+# so real binaries are never modified.
+* text=auto
+
+# Pin the working tree to LF. Without `eol`, a Windows checkout with
+# core.autocrlf=true would still produce CRLF.
+# Do NOT use `* text=auto eol=lf` -- `eol` implies `text` for every matched
+# path including binaries, and silently strips their CR bytes on add.
+*.py           text eol=lf
+*.sh           text eol=lf
+*.tf           text eol=lf
+*.tfvars       text eol=lf
+*.hcl          text eol=lf
+*.md           text eol=lf
+*.example      text eol=lf
+Makefile       text eol=lf
+.gitattributes text eol=lf

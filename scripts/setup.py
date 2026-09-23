@@ -37,7 +37,7 @@ def main():
         run(['apt-get', 'upgrade', '-y'])
 
         # Install basic packages
-        ensure_package_installed(['curl', 'git', 'dos2unix'])
+        ensure_package_installed(['curl', 'git'])
 
         # Create maintenance scripts directory
         Path('/usr/local/bin').mkdir(parents=True, exist_ok=True)
