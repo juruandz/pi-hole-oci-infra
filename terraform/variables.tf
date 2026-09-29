@@ -108,13 +108,18 @@ variable "wireguard_mtu" {
 }
 
 variable "wireguard_clients" {
-  description = "WireGuard peers to create. Keypairs and preshared keys are generated on the instance and written to /etc/wireguard/configs/<name>.conf."
+  description = "Initial WireGuard peers created via `pivpn add`. Only created when the client config is missing, so re-applies never overwrite keys. Manage peers afterwards with `pivpn add` on the instance."
   type = list(object({
-    name        = string
-    ip          = string
-    allowed_ips = optional(string, "0.0.0.0/0")
+    name = string
+    ip   = string
   }))
   default = []
+}
+
+variable "pivpn_version" {
+  description = "PiVPN release to install. Pinned so a deploy is reproducible; bump deliberately."
+  type        = string
+  default     = "v4.11.1"
 }
 
 # --- DDNS --------------------------------------------------------------------

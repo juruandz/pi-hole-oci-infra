@@ -18,6 +18,7 @@ locals {
       subnet   = var.wireguard_subnet
       port     = var.wireguard_port
       mtu      = var.wireguard_mtu
+      version  = var.pivpn_version
       clients  = var.wireguard_clients
     }
 

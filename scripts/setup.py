@@ -30,6 +30,7 @@ import secrets
 import string
 import subprocess
 import sys
+from ipaddress import ip_interface, ip_network
 from pathlib import Path
 from typing import Any
 
@@ -258,94 +259,107 @@ def install_pihole(cfg: dict[str, Any], iface: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Stage 3: WireGuard
+# Stage 3: WireGuard, managed by PiVPN
 # ---------------------------------------------------------------------------
 
-def wg_pubkey(private_key: str) -> str:
-    proc = subprocess.run(
-        ['wg', 'pubkey'], input=private_key + "\n", capture_output=True, text=True, check=True
-    )
-    return proc.stdout.strip()
+def _pivpn_config(cfg: dict[str, Any], iface: str) -> str:
+    """Render the file PiVPN's --unattended mode sources.
+
+    The variable names are PiVPN's own (it runs `source <file>` on this) and
+    mirror /etc/pivpn/wireguard/setupVars.conf. Only inputs are set: the
+    *_EDITED keys in that file are outputs the installer computes itself.
+    """
+    subnet = ip_network(cfg['subnet'], strict=False)
+    address = ip_interface(cfg['address'])
+    return "\n".join([
+        'USING_UFW=0',
+        'pivpnforceipv6route=1',
+        f'IPv4dev={iface}',
+        'install_user=ubuntu',
+        'install_home=/home/ubuntu',
+        'VPN=wireguard',
+        f'pivpnPORT={cfg["port"]}',
+        f'pivpnDNS1={address.ip}',
+        'pivpnDNS2=',
+        f'pivpnHOST={cfg["endpoint"]}',
+        'pivpnPROTO=udp',
+        f'pivpnMTU={cfg["mtu"]}',
+        'pivpnDEV=wg0',
+        f'pivpnNET={subnet.network_address}',
+        f'subnetClass={subnet.prefixlen}',
+        'pivpnenableipv6=0',
+        'ALLOWED_IPS="0.0.0.0/0, ::0/0"',
+        'UNATTUPG=1',
+        '',
+    ])
 
 
-def configure_wireguard(cfg: dict[str, Any]) -> None:
-    keys_dir = WG_DIR / 'keys'
-    configs_dir = WG_DIR / 'configs'
-    for directory in (WG_DIR, keys_dir, configs_dir):
-        directory.mkdir(parents=True, exist_ok=True)
-    os.chmod(keys_dir, 0o700)
-    os.chmod(configs_dir, 0o700)
+def install_pivpn(cfg: dict[str, Any], iface: str) -> None:
+    """Install PiVPN (wireguard mode) unattended and create the initial peers.
 
-    private_key_path = keys_dir / 'private.key'
-    public_key_path = keys_dir / 'public.key'
-    if not private_key_path.exists():
-        private_key = capture(['wg', 'genkey'])
-        write_file(private_key_path, private_key + "\n", 0o600)
-        write_file(public_key_path, wg_pubkey(private_key) + "\n", 0o644)
-    server_private = private_key_path.read_text().strip()
-    server_public = public_key_path.read_text().strip()
-    server_address = cfg["address"].split('/')[0]
+    PiVPN owns wg0.conf, /etc/wireguard/configs, the 99-pivpn.conf sysctl file
+    and the firewall's tunnel rules from here on. Peer management is `pivpn add`
+    / `pivpn -qr` on the instance, deliberately not Terraform.
 
-    peers: list[str] = []
-    for client in cfg["clients"]:
-        client_private = capture(['wg', 'genkey'])
-        client_public = wg_pubkey(client_private)
-        preshared_key = capture(['wg', 'genpsk'])
+    The clients in var.wireguard_clients are created once, and only when they
+    are not already peers, so a re-run never overwrites a key already in use.
+    """
+    source_dir = Path('/usr/local/src/pivpn')
 
-        peers.append(
-            f"### begin {client['name']} ###\n"
-            "[Peer]\n"
-            f"PublicKey = {client_public}\n"
-            f"PresharedKey = {preshared_key}\n"
-            f"AllowedIPs = {client['ip']}/32\n"
-            f"### end {client['name']} ###\n"
-        )
-
-        client_conf = (
-            "[Interface]\n"
-            f"PrivateKey = {client_private}\n"
-            f"Address = {client['ip']}/24\n"
-            f"DNS = {server_address}\n"
-            "\n"
-            "[Peer]\n"
-            f"PublicKey = {server_public}\n"
-            f"PresharedKey = {preshared_key}\n"
-            f"Endpoint = {cfg['endpoint']}:{cfg['port']}\n"
-            f"AllowedIPs = {client['allowed_ips']}\n"
-        )
-        write_file(configs_dir / f"{client['name']}.conf", client_conf, 0o600)
-
-    wg0_conf = (
-        "[Interface]\n"
-        f"PrivateKey = {server_private}\n"
-        f"Address = {cfg['address']}\n"
-        f"MTU = {cfg['mtu']}\n"
-        f"ListenPort = {cfg['port']}\n"
-        'SaveConfig = false\n'
-        "\n" + "\n".join(peers)
-    )
-
-    conf_path = WG_DIR / 'wg0.conf'
-    changed = not conf_path.exists() or conf_path.read_text() != wg0_conf
-    write_file(conf_path, wg0_conf, 0o600)
-
-    # Forwarding is what lets the full-tunnel clients reach the internet; the
-    # matching MASQUERADE rule is added by configure_firewall().
-    write_file(
-        Path('/etc/sysctl.d/99-pivpn.conf'), 'net.ipv4.ip_forward=1\n', 0o644
-    )
-    run(['sysctl', '--system'])
-
-    run(['systemctl', 'enable', 'wg-quick@wg0'])
-    if run_ok(['systemctl', 'is-active', '--quiet', 'wg-quick@wg0']):
-        if changed:
-            run(['systemctl', 'restart', 'wg-quick@wg0'])
+    if (source_dir / 'auto_install' / 'install.sh').exists():
+        LOG.info("PiVPN source already present in %s; skipping the clone.", source_dir)
     else:
-        run(['systemctl', 'start', 'wg-quick@wg0'])
+        source_dir.parent.mkdir(parents=True, exist_ok=True)
+        run(['git', 'clone', '--branch', cfg['version'],
+             'https://github.com/pivpn/pivpn.git', str(source_dir)])
+
+    config_file = Path('/tmp/pivpn.conf')
+    write_file(config_file, _pivpn_config(cfg, iface), 0o600)
+
+    # Migrate away from a wg0.conf that PiVPN did not write (an earlier version
+    # of this script generated one). PiVPN must own that file; leaving both in
+    # place means two managers overwriting each other on every run.
+    wg0_conf = WG_DIR / 'wg0.conf'
+    setup_vars = Path('/etc/pivpn/wireguard/setupVars.conf')
+    if wg0_conf.exists() and not setup_vars.exists():
+        backup = Path(str(wg0_conf) + '.pre-pivpn')
+        wg0_conf.rename(backup)
+        LOG.warning("Existing non-PiVPN wg0.conf moved aside to %s", backup)
+
+    # PiVPN's unattended mode reports "no whiptail dialogs will be displayed".
+    # stdin=/dev/null plus a timeout is the safety net: an unexpected prompt
+    # fails fast rather than hanging an apply forever.
+    run(
+        ['bash', str(source_dir / 'auto_install' / 'install.sh'),
+         '--unattended', str(config_file)],
+        stdin=subprocess.DEVNULL,
+        timeout=1800,
+    )
+
+    # Peers are identified by their marker in wg0.conf, not by the presence of a
+    # client file: a leftover .conf from another manager holds a key that does
+    # not match the current server key, so it has to be regenerated.
+    configs_dir = WG_DIR / 'configs'
+    existing_conf = wg0_conf.read_text() if wg0_conf.exists() else ''
+    for client in cfg['clients']:
+        name = client['name']
+        if f"### begin {name} ###" in existing_conf:
+            LOG.info("Client %s already a peer in wg0.conf; leaving it alone.", name)
+            continue
+        stale = configs_dir / f"{name}.conf"
+        if stale.exists():
+            LOG.warning("Removing stale client config %s before recreating it.", stale)
+            stale.unlink()
+        run(
+            ['pivpn', 'add', '-n', name, '-ip', client['ip']],
+            stdin=subprocess.DEVNULL,
+            timeout=300,
+        )
 
     LOG.info(
-        "WireGuard up on port %s with %d peer(s); client configs in %s",
-        cfg['port'], len(cfg['clients']), configs_dir,
+        "PiVPN %s installed (port %s); %d client config(s) ensured. Manage peers "
+        "with `pivpn add` / `pivpn -qr`.",
+        cfg['version'], cfg['port'], len(cfg['clients']),
     )
 
 
@@ -540,7 +554,7 @@ def main():
 
         install_maintenance()
         install_pihole(cfg['pihole'], iface)
-        configure_wireguard(cfg['wireguard'])
+        install_pivpn(cfg['wireguard'], iface)
         configure_fail2ban(cfg['ssh_port'])
         configure_firewall(cfg['wireguard'], iface, cfg['ssh_port'])
         install_ddns(cfg['ddns'])
