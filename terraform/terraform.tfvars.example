@@ -1,7 +1,7 @@
 # Required variables
 compartment_id     = "ocid1.compartment.oc1..example"  # Replace with your compartment OCID
 region            = "eu-stockholm-1"
-availability_domain = "1"  # Check your region's availability domains
+availability_domain = ""  # Empty = first AD in the region. Set an explicit AD name (e.g. "YbUn:EU-STOCKHOLM-1-AD-1") if E2.1.Micro capacity is unavailable.
 
 # Security
 allowed_ip        = "YOUR_IP/32"  # Replace with your IP address in CIDR notation (e.g., "78.157.68.185/32")

@@ -12,17 +12,10 @@ resource "oci_core_security_list" "default_security_list" {
   # manage_default_resource_id = oci_core_vcn.pihole_vcn.default_security_list_id
   display_name = "default_security_list"
 
-  # Allow SSH from anywhere
-  ingress_security_rules {
-    protocol  = "6" # TCP
-    source    = "0.0.0.0/0"
-    stateless = false
-
-    tcp_options {
-      min = 22
-      max = 22
-    }
-  }
+  # NOTE: deliberately NO SSH rule here. Anything that depends on the home IP
+  # (SSH, DNS, admin UI, ping) lives in the DDNS-managed security list below,
+  # whose ingress sources are rewritten to the current home IP by the DDNS
+  # cron job. A world-open tcp/22 rule used to sit here; it is gone on purpose.
 
   # Allow ICMP type 3 code 4 from anywhere
   ingress_security_rules {
@@ -86,28 +79,61 @@ resource "oci_core_route_table" "route_table" {
 }
 
 # Custom Security List
+# Home-IP-dependent access. The on-host update_ddns.py cron job rewrites the
+# `source` of EVERY ingress rule in this list to the current DDNS-resolved home
+# IP, so var.allowed_ip is only the initial seed value.
 resource "oci_core_security_list" "ddns_security_list" {
   compartment_id = var.compartment_id
   vcn_id         = oci_core_vcn.pihole_vcn.id
-  display_name   = "ddns_security_list"
+  display_name   = "pihole-ddns-security-list"
 
-  # Allow TCP ports 443 and 53 from specific IP
+  # Allow SSH from the home IP
   ingress_security_rules {
-    protocol  = "6" # TCP
-    source    = var.allowed_ip
-    stateless = false
+    protocol    = "6" # TCP
+    source      = var.allowed_ip
+    stateless   = false
+    description = "SSH from home IP"
+
+    tcp_options {
+      min = var.ssh_port
+      max = var.ssh_port
+    }
+  }
+
+  # Allow DNS over TCP from the home IP.
+  # Must be a 53-to-53 rule: a min/max range (previously 53-443) opens every
+  # port in between, not just the two endpoints.
+  ingress_security_rules {
+    protocol    = "6" # TCP
+    source      = var.allowed_ip
+    stateless   = false
+    description = "DNS over TCP"
 
     tcp_options {
       min = 53
+      max = 53
+    }
+  }
+
+  # Allow the Pi-hole admin UI / DoH from the home IP
+  ingress_security_rules {
+    protocol    = "6" # TCP
+    source      = var.allowed_ip
+    stateless   = false
+    description = "Pi-hole admin UI"
+
+    tcp_options {
+      min = 443
       max = 443
     }
   }
 
-  # Allow all UDP from specific IP
+  # Allow DNS over UDP from the home IP
   ingress_security_rules {
-    protocol  = "17" # UDP
-    source    = var.allowed_ip
-    stateless = false
+    protocol    = "17" # UDP
+    source      = var.allowed_ip
+    stateless   = false
+    description = "DNS over UDP"
 
     udp_options {
       min = 53
@@ -115,11 +141,12 @@ resource "oci_core_security_list" "ddns_security_list" {
     }
   }
 
-  # Allow ICMP from specific IP
+  # Allow ICMP from the home IP
   ingress_security_rules {
-    protocol  = "1" # ICMP
-    source    = var.allowed_ip
-    stateless = false
+    protocol    = "1" # ICMP
+    source      = var.allowed_ip
+    stateless   = false
+    description = "ICMP from home IP"
   }
 
   # Allow all egress traffic (required for package downloads and internet access)
@@ -151,6 +178,16 @@ data "oci_identity_availability_domains" "ads" {
   compartment_id = var.compartment_id
 }
 
+locals {
+  # var.availability_domain wins when set (non-empty); otherwise use the first AD.
+  # Setting the variable explicitly lets you retry another AD when
+  # VM.Standard.E2.1.Micro capacity is unavailable in the first one.
+  availability_domain = coalesce(
+    var.availability_domain,
+    data.oci_identity_availability_domains.ads.availability_domains[0].name
+  )
+}
+
 # Compute Instance
 data "oci_core_images" "ubuntu_images" {
   compartment_id           = var.compartment_id
@@ -162,7 +199,7 @@ data "oci_core_images" "ubuntu_images" {
 }
 
 resource "oci_core_instance" "pihole_instance" {
-  availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
+  availability_domain = local.availability_domain
   compartment_id      = var.compartment_id
   shape               = var.instance_shape
 

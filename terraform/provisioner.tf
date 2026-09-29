@@ -13,6 +13,7 @@ resource "null_resource" "setup_provisioner" {
     connection {
       type        = "ssh"
       user        = "ubuntu"
+      port        = var.ssh_port
       private_key = var.ssh_private_key
       host        = oci_core_public_ip.pihole_public_ip.ip_address
     }
@@ -28,6 +29,7 @@ resource "null_resource" "setup_provisioner" {
     connection {
       type        = "ssh"
       user        = "ubuntu"
+      port        = var.ssh_port
       private_key = var.ssh_private_key
       host        = oci_core_public_ip.pihole_public_ip.ip_address
     }

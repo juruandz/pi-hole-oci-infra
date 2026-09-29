@@ -10,9 +10,9 @@ variable "compartment_id" {
 }
 
 variable "availability_domain" {
-  description = "The availability domain to create resources in"
+  description = "Availability domain NAME to deploy into (e.g. \"YbUn:EU-STOCKHOLM-1-AD-1\"). Leave empty to use the first AD returned for the region. Set this explicitly when E2.1.Micro capacity is unavailable in the first AD."
   type        = string
-  default     = "1"
+  default     = ""
 }
 
 variable "instance_shape" {
@@ -34,13 +34,23 @@ variable "ssh_private_key" {
 }
 
 variable "allowed_ip" {
-  description = "The IP address allowed to access the instance (format: IP/32)"
+  description = "Initial home IP allowed to reach SSH/DNS/admin UI, in CIDR notation (use a /32). The DDNS cron job rewrites this to the live home IP after deployment."
   type        = string
-  default     = "0.0.0.0/0" # Default to all IPs, but should be restricted in tfvars
+
+  validation {
+    condition     = can(cidrhost(var.allowed_ip, 0)) && endswith(var.allowed_ip, "/32")
+    error_message = "allowed_ip must be a single host CIDR such as \"78.56.206.98/32\"."
+  }
 }
 
 variable "ddns_host" {
   description = "The DDNS hostname to use for security list updates"
   type        = string
   default     = ""
+}
+
+variable "ssh_port" {
+  description = "SSH port allowed from the home IP and used by the provisioning connection"
+  type        = number
+  default     = 22
 }
