@@ -1,28 +1,430 @@
 #!/usr/bin/env python3
-"""
-Provisioning script for the Pi-hole server instance.
+"""Provision the Pi-hole + WireGuard server.
 
-Runs non-interactive apt upgrades, installs required packages,
-creates /usr/local/bin/nightly_reboot_check.sh, configures cron,
-creates logs, configures iptables, and schedules a reboot.
+Invoked over SSH by ``null_resource.setup_provisioner``. All deployment
+settings arrive in ``/tmp/provision-vars.json``, which Terraform renders with
+``jsonencode()``, so nothing secret is stored in the repository.
+
+Every stage is idempotent: re-running this script (for example after an edit,
+which flips the ``null_resource`` trigger) must not damage a working server.
+
+Stages:
+  1. apt update/upgrade and base packages
+  2. Pi-hole v6 unattended install
+  3. WireGuard server and generated client configs
+  4. fail2ban
+  5. firewall rules and persistence
+  6. maintenance script and cron entries
+  7. DDNS security-list updater
+  8. reboot if the updates require it
+
+Deliberately not automated, because it needs secrets that must not live in
+git: the OCI API key and its pass phrase used by the DDNS updater. See the
+"DDNS credentials" section of README.md.
 """
 
-import os
-import sys
-import subprocess
+import json
 import logging
+import os
+import secrets
+import string
+import subprocess
+import sys
 from pathlib import Path
+from typing import Any
 
 LOG = logging.getLogger("setup")
 
+VARS_PATH = Path("/tmp/provision-vars.json")
+UBUNTU_HOME = Path("/home/ubuntu")
+DDNS_DIR = UBUNTU_HOME / "bin" / "oci-cli-scripts"
+WG_DIR = Path("/etc/wireguard")
+OCI_CLI_VENV = UBUNTU_HOME / "lib" / "oracle-cli"
+PASSPHRASE_FILE = Path("/etc/oci/oci_api_key_passphrase")
 
-def run(cmd, check=True):
-    LOG.info("Running: %s", cmd)
-    return subprocess.run(cmd, check=check)
+
+def run(cmd, check=True, **kwargs):
+    LOG.info("Running: %s", " ".join(str(c) for c in cmd))
+    return subprocess.run(cmd, check=check, **kwargs)
+
+
+def run_ok(cmd, **kwargs) -> bool:
+    """Run a command and report whether it exited 0, discarding its output.
+
+    Used for the "does this rule/file already exist" probes and for optional
+    commands whose failure must not abort provisioning.
+    """
+    LOG.info("Checking: %s", " ".join(str(c) for c in cmd))
+    try:
+        proc = subprocess.run(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs
+        )
+    except FileNotFoundError:
+        return False
+    return proc.returncode == 0
+
+
+def capture(cmd) -> str:
+    return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.strip()
 
 
 def ensure_package_installed(pkgs):
     run(['apt-get', 'install', '-y'] + pkgs)
+
+
+def write_file(path: Path, content: str, mode: int, owner: str | None = None) -> None:
+    """Write ``content`` to ``path``, creating parents, then set mode/owner."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    os.chmod(path, mode)
+    if owner:
+        run(['chown', owner, str(path)])
+
+
+def load_vars() -> dict[str, Any]:
+    if not VARS_PATH.exists():
+        LOG.error("Missing %s; nothing to provision.", VARS_PATH)
+        sys.exit(1)
+    with VARS_PATH.open(encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def default_interface() -> str:
+    """Name of the interface carrying the default route (``ens3`` on OCI)."""
+    return capture(
+        ["sh", "-c", "ip -o -4 route show default | awk '{print $5}' | head -n1"]
+    )
+
+
+def generate_password(length: int = 24) -> str:
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def update_crontab(user: str, wanted: list[str], drop_substrings: list[str]) -> None:
+    """Idempotently ensure ``wanted`` cron lines exist and stale ones are gone.
+
+    Existing entries (including comments) are preserved; only lines containing
+    one of ``drop_substrings`` are discarded.
+    """
+    proc = subprocess.run(
+        ['crontab', '-u', user, '-l'], capture_output=True, text=True
+    )
+    existing = proc.stdout.splitlines() if proc.returncode == 0 else []
+
+    kept = [
+        line
+        for line in existing
+        if line.strip() and not any(s in line for s in drop_substrings)
+    ]
+    for line in wanted:
+        if line not in kept:
+            kept.append(line)
+
+    subprocess.run(
+        ['crontab', '-u', user, '-'],
+        input="\n".join(kept) + "\n",
+        text=True,
+        check=True,
+    )
+    LOG.info("crontab for %s updated (%d entries)", user, len(kept))
+
+
+def ensure_iptables_rule(body: list[str], table: str | None = None) -> None:
+    """Add an iptables rule unless an identical one already exists."""
+    prefix = ['iptables'] + (['-t', table] if table else [])
+    if not run_ok(prefix + ['-C'] + body):
+        run(prefix + ['-A'] + body)
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: Pi-hole
+# ---------------------------------------------------------------------------
+
+def install_pihole(cfg: dict[str, Any], iface: str) -> None:
+    upstreams = list(cfg["upstream_dns"])
+    password = cfg["web_password"]
+    generated = False
+    if not password:
+        password = generate_password()
+        generated = True
+
+    if run_ok(['pihole', '-v']):
+        LOG.info("Pi-hole is already installed; skipping the installer.")
+    else:
+        installer = Path('/tmp/basic-install.sh')
+        run(['curl', '-fsSL', 'https://install.pi-hole.net', '-o', str(installer)])
+
+        env = os.environ.copy()
+        env.update({
+            'PIHOLE_INTERFACE': iface,
+            'IPV4_ADDRESS': cfg["ipv4_address"],
+            'IPV6_ADDRESS': '',
+            'PIHOLE_DNS_1': upstreams[0] if upstreams else '1.1.1.1',
+            'PIHOLE_DNS_2': upstreams[1] if len(upstreams) > 1 else '',
+            'DNSSEC': 'true' if cfg["dnssec"] else 'false',
+            'QUERY_LOGGING': 'true',
+            'INSTALL_WEB_SERVER': 'true',
+            'INSTALL_WEB_INTERFACE': 'true',
+            'LIGHTTPD_ENABLED': 'false',
+            'WEBPASSWORD': password,
+            'REBOOT': 'false',
+        })
+        run(['bash', str(installer), '--unattended'], env=env)
+
+    if generated:
+        # Keep the password retrievable instead of silently discarding it.
+        write_file(Path('/root/pihole-web-password'), password + "\n", 0o600)
+        LOG.warning(
+            "No pihole_web_password supplied; a random one was generated. "
+            "Read it with: sudo cat /root/pihole-web-password"
+        )
+    elif run_ok(['pihole', 'setpassword', password]):
+        LOG.info("Pi-hole web password applied.")
+    else:
+        LOG.warning(
+            "Could not set the Pi-hole web password; run `pihole setpassword` manually."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: WireGuard
+# ---------------------------------------------------------------------------
+
+def wg_pubkey(private_key: str) -> str:
+    proc = subprocess.run(
+        ['wg', 'pubkey'], input=private_key + "\n", capture_output=True, text=True, check=True
+    )
+    return proc.stdout.strip()
+
+
+def configure_wireguard(cfg: dict[str, Any]) -> None:
+    keys_dir = WG_DIR / 'keys'
+    configs_dir = WG_DIR / 'configs'
+    for directory in (WG_DIR, keys_dir, configs_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+    os.chmod(keys_dir, 0o700)
+    os.chmod(configs_dir, 0o700)
+
+    private_key_path = keys_dir / 'private.key'
+    public_key_path = keys_dir / 'public.key'
+    if not private_key_path.exists():
+        private_key = capture(['wg', 'genkey'])
+        write_file(private_key_path, private_key + "\n", 0o600)
+        write_file(public_key_path, wg_pubkey(private_key) + "\n", 0o644)
+    server_private = private_key_path.read_text().strip()
+    server_public = public_key_path.read_text().strip()
+    server_address = cfg["address"].split('/')[0]
+
+    peers: list[str] = []
+    for client in cfg["clients"]:
+        client_private = capture(['wg', 'genkey'])
+        client_public = wg_pubkey(client_private)
+        preshared_key = capture(['wg', 'genpsk'])
+
+        peers.append(
+            f"### begin {client['name']} ###\n"
+            "[Peer]\n"
+            f"PublicKey = {client_public}\n"
+            f"PresharedKey = {preshared_key}\n"
+            f"AllowedIPs = {client['ip']}/32\n"
+            f"### end {client['name']} ###\n"
+        )
+
+        client_conf = (
+            "[Interface]\n"
+            f"PrivateKey = {client_private}\n"
+            f"Address = {client['ip']}/24\n"
+            f"DNS = {server_address}\n"
+            "\n"
+            "[Peer]\n"
+            f"PublicKey = {server_public}\n"
+            f"PresharedKey = {preshared_key}\n"
+            f"Endpoint = {cfg['endpoint']}:{cfg['port']}\n"
+            f"AllowedIPs = {client['allowed_ips']}\n"
+        )
+        write_file(configs_dir / f"{client['name']}.conf", client_conf, 0o600)
+
+    wg0_conf = (
+        "[Interface]\n"
+        f"PrivateKey = {server_private}\n"
+        f"Address = {cfg['address']}\n"
+        f"MTU = {cfg['mtu']}\n"
+        f"ListenPort = {cfg['port']}\n"
+        'SaveConfig = false\n'
+        "\n" + "\n".join(peers)
+    )
+
+    conf_path = WG_DIR / 'wg0.conf'
+    changed = not conf_path.exists() or conf_path.read_text() != wg0_conf
+    write_file(conf_path, wg0_conf, 0o600)
+
+    # Forwarding is what lets the full-tunnel clients reach the internet; the
+    # matching MASQUERADE rule is added by configure_firewall().
+    write_file(
+        Path('/etc/sysctl.d/99-pivpn.conf'), 'net.ipv4.ip_forward=1\n', 0o644
+    )
+    run(['sysctl', '--system'])
+
+    run(['systemctl', 'enable', 'wg-quick@wg0'])
+    if run_ok(['systemctl', 'is-active', '--quiet', 'wg-quick@wg0']):
+        if changed:
+            run(['systemctl', 'restart', 'wg-quick@wg0'])
+    else:
+        run(['systemctl', 'start', 'wg-quick@wg0'])
+
+    LOG.info(
+        "WireGuard up on port %s with %d peer(s); client configs in %s",
+        cfg['port'], len(cfg['clients']), configs_dir,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: fail2ban
+# ---------------------------------------------------------------------------
+
+def configure_fail2ban(ssh_port: int) -> None:
+    jail_local = (
+        "[recidive]\n"
+        "enabled  = true\n"
+        "logpath  = /var/log/fail2ban.log\n"
+        "banaction = iptables-allports\n"
+        "bantime  = 1w\n"
+        "findtime = 1d\n"
+        "maxretry = 5\n"
+        "\n"
+        "[sshd]\n"
+        "enabled = true\n"
+        f"port    = {ssh_port}\n"
+        "logpath = %(sshd_log)s\n"
+        "backend = %(sshd_backend)s\n"
+    )
+    write_file(Path('/etc/fail2ban/jail.local'), jail_local, 0o644)
+    run(['systemctl', 'enable', 'fail2ban'])
+    run(['systemctl', 'restart', 'fail2ban'])
+
+
+# ---------------------------------------------------------------------------
+# Stage 5: firewall
+# ---------------------------------------------------------------------------
+
+def configure_firewall(cfg: dict[str, Any], iface: str) -> None:
+    ensure_iptables_rule(
+        ['INPUT', '-i', iface, '-p', 'udp', '--dport', str(cfg['port']),
+         '-m', 'comment', '--comment', 'wireguard-input-rule', '-j', 'ACCEPT']
+    )
+    ensure_iptables_rule(
+        ['INPUT', '-i', 'wg0', '-p', 'udp', '--dport', '53',
+         '-m', 'comment', '--comment', 'pihole-DNS-rule', '-j', 'ACCEPT']
+    )
+    ensure_iptables_rule(
+        ['POSTROUTING', '-s', cfg['subnet'], '-o', iface,
+         '-m', 'comment', '--comment', 'wireguard-nat-rule', '-j', 'MASQUERADE'],
+        table='nat',
+    )
+
+    # Persist so the rules survive the reboot scheduled at the end of the run.
+    run(['netfilter-persistent', 'save'])
+    run(['systemctl', 'enable', 'netfilter-persistent'])
+
+
+# ---------------------------------------------------------------------------
+# Stage 6: maintenance
+# ---------------------------------------------------------------------------
+
+def install_maintenance() -> None:
+    reboot_script = Path('/usr/local/bin/nightly_reboot_check.py')
+    write_file(reboot_script, Path('/tmp/nightly_reboot_check.py').read_text(), 0o755)
+
+    log_path = Path('/var/log/nightly_reboot.log')
+    log_path.touch(exist_ok=True)
+    os.chmod(str(log_path), 0o644)
+
+    # Drop the legacy shell variant written by earlier versions of this script.
+    update_crontab(
+        'root',
+        [f'0 3 * * 6 {reboot_script}'],
+        drop_substrings=['nightly_reboot_check.sh'],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stage 7: DDNS updater
+# ---------------------------------------------------------------------------
+
+def install_oci_cli() -> None:
+    wrapper = UBUNTU_HOME / 'bin' / 'oci'
+    if wrapper.exists():
+        LOG.info("OCI CLI wrapper already present; skipping install.")
+        return
+
+    ensure_package_installed(['python3-venv', 'python3-pip'])
+    run(['python3', '-m', 'venv', str(OCI_CLI_VENV)])
+    run([str(OCI_CLI_VENV / 'bin' / 'pip'), 'install', '--quiet', '--upgrade', 'pip'])
+    run([str(OCI_CLI_VENV / 'bin' / 'pip'), 'install', '--quiet', 'oci-cli'])
+    run(['chown', '-R', 'ubuntu:ubuntu', str(OCI_CLI_VENV)])
+    run(['chown', '-R', 'ubuntu:ubuntu', str(UBUNTU_HOME / 'lib')])
+
+    write_file(
+        wrapper,
+        "#!"
+        f"{OCI_CLI_VENV}/bin/python3\n"
+        "import sys\n"
+        "from oci_cli.cli import cli\n"
+        "if __name__ == '__main__':\n"
+        "    sys.exit(cli())\n",
+        0o755,
+        owner='ubuntu:ubuntu',
+    )
+
+
+def install_ddns(cfg: dict[str, Any]) -> None:
+    if not cfg['enabled']:
+        LOG.info(
+            "DDNS updater disabled (need both ddns_host and a security list id); skipping."
+        )
+        return
+
+    if cfg['install_oci_cli']:
+        install_oci_cli()
+
+    # Create the directory before chowning it; the updater runs as `ubuntu`.
+    DDNS_DIR.mkdir(parents=True, exist_ok=True)
+    run(['chown', '-R', 'ubuntu:ubuntu', str(DDNS_DIR.parent)])
+    write_file(
+        DDNS_DIR / 'update_ddns.py',
+        Path('/tmp/update_ddns.py').read_text(),
+        0o755,
+        owner='ubuntu:ubuntu',
+    )
+
+    # /etc/oci holds the API key pass phrase (root-only, read via sudo -n).
+    etc_oci = Path('/etc/oci')
+    etc_oci.mkdir(parents=True, exist_ok=True)
+    os.chmod(etc_oci, 0o700)
+
+    log_path = Path('/var/log/ddns_update.log')
+    log_path.touch(exist_ok=True)
+    os.chmod(str(log_path), 0o664)
+    run(['chown', 'ubuntu:ubuntu', str(log_path)])
+
+    cron_line = (
+        f"0 3 * * * python3 {DDNS_DIR / 'update_ddns.py'}"
+        f" --host {cfg['host']}"
+        f" --security-list-ocid {cfg['security_list_id']}"
+        f" --region {cfg['region']}"
+        f" >> {log_path} 2>&1"
+    )
+    update_crontab('ubuntu', [cron_line], drop_substrings=['update_ddns'])
+
+    if not PASSPHRASE_FILE.exists():
+        LOG.warning(
+            "DDNS credentials are not in place yet. Upload the OCI API key to "
+            "/home/ubuntu/.oci/ and the pass phrase to %s (root, mode 600); "
+            "until then the security list will not follow your home IP. "
+            "See README.md > DDNS credentials.",
+            PASSPHRASE_FILE,
+        )
 
 
 def main():
@@ -39,89 +441,24 @@ def main():
         # Install basic packages
         ensure_package_installed(['curl', 'git'])
 
-        # Create maintenance scripts directory
-        Path('/usr/local/bin').mkdir(parents=True, exist_ok=True)
-
-        # Create reboot check script (kept as bash)
-        reboot_script = Path('/usr/local/bin/nightly_reboot_check.sh')
-        reboot_content = r"""#!/bin/bash
-# Script to check for a required reboot and perform it.
-LOGFILE="/var/log/nightly_reboot.log"
-
-echo "--- $(date) - Starting weekly reboot check ---" >> $LOGFILE
-
-# Check for /var/run/reboot-required file (standard update check)
-if [ -f /var/run/reboot-required ]; then
-    echo "$(date) - Reboot required based on /var/run/reboot-required." >> $LOGFILE
-    REBOOT_NEEDED=1
-else
-    # Check using needrestart for kernel/critical library updates
-    # The 'needrestart' utility exits with a status code of 3 if a restart is needed.
-    # -r i: Check for kernel reboot only (not service restarts) and use interactive/informational mode
-    if needrestart -r i | grep -q "System is asking for a reboot"; then
-        echo "$(date) - Reboot required based on needrestart output (kernel/library update)." >> $LOGFILE
-        REBOOT_NEEDED=1
-    else
-        echo "$(date) - No reboot required." >> $LOGFILE
-        REBOOT_NEEDED=0
-    fi
-fi
-
-# Perform reboot if needed
-if [ "$REBOOT_NEEDED" -eq 1 ]; then
-    echo "$(date) - Scheduling reboot in 5 minutes." >> $LOGFILE
-    # /sbin/shutdown -r +5 schedules a reboot in 5 minutes with a warning message
-    /sbin/shutdown -r +5 "Automated nightly reboot due to system updates." >> $LOGFILE 2>&1
-    echo "$(date) - Reboot command executed." >> $LOGFILE
-fi
-
-echo "--- $(date) - Nightly reboot check finished ---" >> $LOGFILE
-"""
-        reboot_script.write_text(reboot_content)
-        os.chmod(reboot_script, 0o755)
-
         # Install required packages for scripts
         # iptables-persistent provides /etc/iptables/ and netfilter-persistent
-        ensure_package_installed(['needrestart', 'jq', 'dnsutils', 'iptables-persistent'])
+        ensure_package_installed([
+            'needrestart', 'jq', 'dnsutils', 'iptables-persistent',
+            'wireguard-tools', 'fail2ban',
+        ])
 
-        # Set up cron jobs (run as root since shutdown requires root permissions)
-        cron_line = "0 3 * * 6 /usr/local/bin/nightly_reboot_check.sh"
-        p = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
-        existing = p.stdout if p.returncode == 0 else ''
-        lines = [l for l in existing.splitlines() if l.strip() != '']
-        if cron_line not in lines:
-            lines.append(cron_line)
-            seen = set()
-            new_lines = []
-            for l in lines:
-                if l not in seen:
-                    seen.add(l)
-                    new_lines.append(l)
-            new_cron = "\n".join(new_lines) + "\n"
-            subprocess.run(['crontab', '-'], input=new_cron, text=True, check=True)
+        # Deployment settings rendered by Terraform (see provisioner.tf)
+        cfg = load_vars()
+        iface = default_interface()
+        LOG.info("Using interface %s", iface)
 
-        # Create log files with proper permissions
-        log_path = Path('/var/log/nightly_reboot.log')
-        log_path.touch(exist_ok=True)
-        os.chmod(str(log_path), 0o644)
-
-        # Configure iptables rules idempotently
-        rules = [
-            ['iptables', '-C', 'INPUT', '-p', 'udp', '-m', 'udp', '--dport', '53', '-j', 'ACCEPT'],
-            ['iptables', '-C', 'INPUT', '-p', 'tcp', '-m', 'tcp', '--dport', '53', '-j', 'ACCEPT'],
-            ['iptables', '-C', 'INPUT', '-p', 'tcp', '-m', 'state', '--state', 'NEW', '-m', 'tcp', '--dport', '80', '-j', 'ACCEPT'],
-            ['iptables', '-C', 'INPUT', '-p', 'tcp', '-m', 'state', '--state', 'NEW', '-m', 'tcp', '--dport', '443', '-j', 'ACCEPT'],
-        ]
-        for check_cmd in rules:
-            res = subprocess.run(check_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if res.returncode != 0:
-                add_cmd = check_cmd.copy()
-                add_cmd[1] = '-A'
-                run(add_cmd)
-
-        # Persist rules so they survive the reboot scheduled below
-        run(['netfilter-persistent', 'save'])
-        run(['systemctl', 'enable', 'netfilter-persistent'])
+        install_maintenance()
+        install_pihole(cfg['pihole'], iface)
+        configure_wireguard(cfg['wireguard'])
+        configure_fail2ban(cfg['ssh_port'])
+        configure_firewall(cfg['wireguard'], iface)
+        install_ddns(cfg['ddns'])
 
         # Save configuration info
         ip_proc = subprocess.run(['curl', '-s', 'ifconfig.me'], capture_output=True, text=True)
@@ -129,8 +466,12 @@ echo "--- $(date) - Nightly reboot check finished ---" >> $LOGFILE
         LOG.info("Server IP: %s", ip_proc.stdout.strip())
         LOG.info("Setup completed successfully!")
 
-        # Schedule reboot
-        run(['/sbin/shutdown', '-r', '+2', 'Scheduled reboot after setup'])
+        # Schedule the reboot last: the upgrades above plus the freshly started
+        # wg-quick@wg0 are best confirmed by a clean boot.
+        if cfg['reboot_after_setup']:
+            run(['/sbin/shutdown', '-r', '+2', 'Scheduled reboot after setup'])
+        else:
+            LOG.info("reboot_after_setup is false; skipping the final reboot.")
 
     except subprocess.CalledProcessError as e:
         LOG.exception("Command failed: %s", e)

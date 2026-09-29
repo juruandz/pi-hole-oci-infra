@@ -9,5 +9,28 @@ ssh_public_key    = file("path/to/your/ssh-key.pub")  # Replace with path to you
 ssh_private_key   = file("path/to/your/ssh-key")      # Replace with path to your SSH private key file (used for provisioning)
 ddns_host         = "yourhost.com"  # Replace with your DDNS hostname (leave empty "" if not using DDNS)
 
+# Pi-hole
+pihole_upstream_dns = ["1.1.1.1", "1.0.0.1"]
+pihole_dnssec       = false
+# pihole_web_password = "pick-something"  # Unset = a random password is generated; read it with `sudo cat /root/pihole-web-password`
+
+# WireGuard
+wireguard_address = "10.182.229.1/24"
+wireguard_subnet  = "10.182.229.0/24"
+wireguard_port    = 51820
+wireguard_mtu     = 1280
+
+# Peers to generate. Keypairs and preshared keys are created on the instance
+# and written to /etc/wireguard/configs/<name>.conf. AllowedIPs defaults to
+# 0.0.0.0/0 (full tunnel); for a DNS-only client use the server's tunnel IP,
+# e.g. allowed_ips = "10.182.229.1/32".
+wireguard_clients = [
+  { name = "laptop", ip = "10.182.229.2" },
+  # { name = "phone-dns", ip = "10.182.229.3", allowed_ips = "10.182.229.1/32" },
+]
+
 # Optional overrides
-# instance_shape   = "VM.Standard.E2.1.Micro"  # Default value, can be changed if needed
+# instance_shape      = "VM.Standard.E2.1.Micro" # Default value, can be changed if needed
+# ssh_port            = 22
+# reboot_after_setup  = true
+# ddns_install_oci_cli = true
