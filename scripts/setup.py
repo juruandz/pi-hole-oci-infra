@@ -43,18 +43,30 @@ OCI_CLI_VENV = UBUNTU_HOME / "lib" / "oracle-cli"
 PASSPHRASE_FILE = Path("/etc/oci/oci_api_key_passphrase")
 
 
-def run(cmd, check=True, **kwargs):
-    LOG.info("Running: %s", " ".join(str(c) for c in cmd))
+def _describe(cmd, redact: bool) -> str:
+    """Render a command for the log, optionally hiding its final argument.
+
+    Provisioning output lands in terraform's apply output and any CI log, so
+    commands carrying a secret (the Pi-hole password) must not print it.
+    """
+    parts = [str(part) for part in cmd]
+    if redact and parts:
+        parts[-1] = '<redacted>'
+    return " ".join(parts)
+
+
+def run(cmd, check=True, redact=False, **kwargs):
+    LOG.info("Running: %s", _describe(cmd, redact))
     return subprocess.run(cmd, check=check, **kwargs)
 
 
-def run_ok(cmd, **kwargs) -> bool:
+def run_ok(cmd, redact=False, **kwargs) -> bool:
     """Run a command and report whether it exited 0, discarding its output.
 
     Used for the "does this rule/file already exist" probes and for optional
     commands whose failure must not abort provisioning.
     """
-    LOG.info("Checking: %s", " ".join(str(c) for c in cmd))
+    LOG.info("Checking: %s", _describe(cmd, redact))
     try:
         proc = subprocess.run(
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs
@@ -68,8 +80,14 @@ def capture(cmd) -> str:
     return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.strip()
 
 
-def ensure_package_installed(pkgs):
-    run(['apt-get', 'install', '-y'] + pkgs)
+def ensure_package_installed(pkgs, recommends=True):
+    cmd = ['apt-get', 'install', '-y']
+    if not recommends:
+        # python3-pip Recommends build-essential, which drags in gcc/g++ and
+        # friends: a compiler toolchain is useless on a 1 GB instance and costs
+        # several minutes of install time.
+        cmd.append('--no-install-recommends')
+    run(cmd + pkgs)
 
 
 def write_file(path: Path, content: str, mode: int, owner: str | None = None) -> None:
@@ -131,10 +149,22 @@ def update_crontab(user: str, wanted: list[str], drop_substrings: list[str]) -> 
 
 
 def ensure_iptables_rule(body: list[str], table: str | None = None) -> None:
-    """Add an iptables rule unless an identical one already exists."""
+    """Put a rule at the top of its chain, replacing any existing copy.
+
+    Insertion rather than append is essential: the stock OCI image ruleset ends
+    its INPUT chain with a catch-all REJECT, so an appended rule sits after it
+    and never matches anything.
+
+    An existing copy is deleted first rather than left in place, because `-C`
+    matches a rule wherever it sits -- a rule appended after the catch-all is
+    present but inert, and skipping it would leave it inert forever.
+    """
     prefix = ['iptables'] + (['-t', table] if table else [])
-    if not run_ok(prefix + ['-C'] + body):
-        run(prefix + ['-A'] + body)
+    for _ in range(5):
+        if not run_ok(prefix + ['-C'] + body):
+            break
+        run(prefix + ['-D'] + body)
+    run(prefix + ['-I', body[0], '1'] + body[1:])
 
 
 # ---------------------------------------------------------------------------
@@ -142,16 +172,41 @@ def ensure_iptables_rule(body: list[str], table: str | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 def install_pihole(cfg: dict[str, Any], iface: str) -> None:
-    upstreams = list(cfg["upstream_dns"])
-    password = cfg["web_password"]
-    generated = False
-    if not password:
-        password = generate_password()
-        generated = True
+    """Install Pi-hole v6 and apply the configured settings.
 
-    if run_ok(['pihole', '-v']):
-        LOG.info("Pi-hole is already installed; skipping the installer.")
+    The v6 installer only runs without dialogs on its "not a fresh install"
+    path. check_fresh_install() sets fresh_install=false as soon as
+    /etc/pihole/pihole.toml (or the v5 setupVars.conf) exists, and every
+    prompting function -- welcomeDialogs, chooseInterface, setDNS,
+    chooseBlocklists, setPrivacyLevel -- sits inside the `fresh_install == true`
+    branch. The --unattended flag is honoured only in the else branch, so
+    pre-seeding pihole.toml is what makes an unattended install possible at all.
+
+    Two consequences, both handled below:
+      * the installer skips its own config-application block (also fresh-only),
+        so upstreams/interface/privacy/DNSSEC are applied here through the v6
+        CLI. Their defaults are empty (upstreams = []), so this is not optional;
+      * the installer never sets our password (WEBPASSWORD is not a variable in
+        v6 at all), so `pihole setpassword` is called here.
+    """
+    config_dir = Path('/etc/pihole')
+    toml = config_dir / 'pihole.toml'
+
+    already_installed = (
+        run_ok(['pihole', '-v'])
+        and run_ok(['systemctl', 'is-active', '--quiet', 'pihole-FTL'])
+        and toml.exists()
+        and toml.stat().st_size > 0
+    )
+
+    if already_installed:
+        LOG.info("Pi-hole is installed and running; skipping the installer.")
     else:
+        config_dir.mkdir(parents=True, exist_ok=True)
+        if not toml.exists():
+            # Empty marker: only its existence matters for the branch decision.
+            toml.touch()
+
         installer = Path('/tmp/basic-install.sh')
         run(['curl', '-fsSL', 'https://install.pi-hole.net', '-o', str(installer)])
 
@@ -160,31 +215,46 @@ def install_pihole(cfg: dict[str, Any], iface: str) -> None:
             'PIHOLE_INTERFACE': iface,
             'IPV4_ADDRESS': cfg["ipv4_address"],
             'IPV6_ADDRESS': '',
-            'PIHOLE_DNS_1': upstreams[0] if upstreams else '1.1.1.1',
-            'PIHOLE_DNS_2': upstreams[1] if len(upstreams) > 1 else '',
-            'DNSSEC': 'true' if cfg["dnssec"] else 'false',
             'QUERY_LOGGING': 'true',
-            'INSTALL_WEB_SERVER': 'true',
-            'INSTALL_WEB_INTERFACE': 'true',
-            'LIGHTTPD_ENABLED': 'false',
-            'WEBPASSWORD': password,
-            'REBOOT': 'false',
         })
-        run(['bash', str(installer), '--unattended'], env=env)
 
-    if generated:
-        # Keep the password retrievable instead of silently discarding it.
-        write_file(Path('/root/pihole-web-password'), password + "\n", 0o600)
-        LOG.warning(
-            "No pihole_web_password supplied; a random one was generated. "
-            "Read it with: sudo cat /root/pihole-web-password"
+        # stdin is deliberately /dev/null and there is a timeout: if a dialog
+        # ever does get triggered it must fail fast rather than hang an apply
+        # forever on a prompt that has no TTY to answer it.
+        run(
+            ['bash', str(installer), '--unattended'],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            timeout=1800,
         )
-    elif run_ok(['pihole', 'setpassword', password]):
+
+    # Applied on every run, so editing these tfvars values reconfigures an
+    # existing installation instead of being ignored.
+    set_ftl_config = ['pihole-FTL', '--config']
+    run(set_ftl_config + ['dns.upstreams', json.dumps(list(cfg["upstream_dns"]))])
+    run(set_ftl_config + ['dns.interface', iface])
+    run(set_ftl_config + ['misc.privacylevel', '0'])
+    run(set_ftl_config + ['dns.dnssec', 'true' if cfg["dnssec"] else 'false'])
+    run(set_ftl_config + ['dns.queryLogging', 'true'])
+
+    password = cfg["web_password"] or generate_password()
+    if run_ok(['pihole', 'setpassword', password], redact=True):
         LOG.info("Pi-hole web password applied.")
     else:
         LOG.warning(
             "Could not set the Pi-hole web password; run `pihole setpassword` manually."
         )
+
+    if not cfg["web_password"]:
+        # Keep the generated password retrievable instead of discarding it.
+        write_file(Path('/root/pihole-web-password'), password + "\n", 0o600)
+        LOG.warning(
+            "No pihole_web_password supplied; a generated one is stored in "
+            "/root/pihole-web-password"
+        )
+
+    run(['systemctl', 'restart', 'pihole-FTL'])
+    LOG.info("Pi-hole configured (upstreams=%s, interface=%s)", cfg["upstream_dns"], iface)
 
 
 # ---------------------------------------------------------------------------
@@ -308,15 +378,30 @@ def configure_fail2ban(ssh_port: int) -> None:
 # Stage 5: firewall
 # ---------------------------------------------------------------------------
 
-def configure_firewall(cfg: dict[str, Any], iface: str) -> None:
-    ensure_iptables_rule(
+def configure_firewall(cfg: dict[str, Any], iface: str, ssh_port: int) -> None:
+    """Open the ports this deployment serves, ahead of the image's default REJECT.
+
+    The security list remains the access control: it restricts every one of these
+    to the home IP. The host rules only decide what the instance accepts at all,
+    which is what the stock REJECT would otherwise prevent.
+    """
+    for body in (
+        ['INPUT', '-p', 'tcp', '--dport', str(ssh_port),
+         '-m', 'comment', '--comment', 'ssh-input-rule', '-j', 'ACCEPT'],
         ['INPUT', '-i', iface, '-p', 'udp', '--dport', str(cfg['port']),
-         '-m', 'comment', '--comment', 'wireguard-input-rule', '-j', 'ACCEPT']
-    )
-    ensure_iptables_rule(
-        ['INPUT', '-i', 'wg0', '-p', 'udp', '--dport', '53',
-         '-m', 'comment', '--comment', 'pihole-DNS-rule', '-j', 'ACCEPT']
-    )
+         '-m', 'comment', '--comment', 'wireguard-input-rule', '-j', 'ACCEPT'],
+        ['INPUT', '-p', 'udp', '--dport', '53',
+         '-m', 'comment', '--comment', 'pihole-dns-udp-rule', '-j', 'ACCEPT'],
+        ['INPUT', '-p', 'tcp', '--dport', '53',
+         '-m', 'comment', '--comment', 'pihole-dns-tcp-rule', '-j', 'ACCEPT'],
+        ['INPUT', '-p', 'tcp', '--dport', '80',
+         '-m', 'comment', '--comment', 'pihole-web-http-rule', '-j', 'ACCEPT'],
+        ['INPUT', '-p', 'tcp', '--dport', '443',
+         '-m', 'comment', '--comment', 'pihole-web-https-rule', '-j', 'ACCEPT'],
+    ):
+        ensure_iptables_rule(body)
+
+    # Full-tunnel WireGuard clients need the tunnel subnet NATted out of ens3.
     ensure_iptables_rule(
         ['POSTROUTING', '-s', cfg['subnet'], '-o', iface,
          '-m', 'comment', '--comment', 'wireguard-nat-rule', '-j', 'MASQUERADE'],
@@ -358,7 +443,7 @@ def install_oci_cli() -> None:
         LOG.info("OCI CLI wrapper already present; skipping install.")
         return
 
-    ensure_package_installed(['python3-venv', 'python3-pip'])
+    ensure_package_installed(['python3-venv', 'python3-pip'], recommends=False)
     run(['python3', '-m', 'venv', str(OCI_CLI_VENV)])
     run([str(OCI_CLI_VENV / 'bin' / 'pip'), 'install', '--quiet', '--upgrade', 'pip'])
     run([str(OCI_CLI_VENV / 'bin' / 'pip'), 'install', '--quiet', 'oci-cli'])
@@ -457,7 +542,7 @@ def main():
         install_pihole(cfg['pihole'], iface)
         configure_wireguard(cfg['wireguard'])
         configure_fail2ban(cfg['ssh_port'])
-        configure_firewall(cfg['wireguard'], iface)
+        configure_firewall(cfg['wireguard'], iface, cfg['ssh_port'])
         install_ddns(cfg['ddns'])
 
         # Save configuration info
