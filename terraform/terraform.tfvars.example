@@ -1,12 +1,37 @@
 # Required variables
 compartment_id     = "ocid1.compartment.oc1..example"  # Replace with your compartment OCID
 region            = "eu-stockholm-1"
-availability_domain = "1"  # Check your region's availability domains
+availability_domain = ""  # Empty = first AD in the region. Set an explicit AD name (e.g. "YbUn:EU-STOCKHOLM-1-AD-1") if E2.1.Micro capacity is unavailable.
 
 # Security
 allowed_ip        = "YOUR_IP/32"  # Replace with your IP address in CIDR notation (e.g., "78.157.68.185/32")
-ssh_public_key    = "ssh-rsa AAAA..."  # Replace with your SSH public key
+ssh_public_key    = file("path/to/your/ssh-key.pub")  # Replace with path to your SSH public key file
+ssh_private_key   = file("path/to/your/ssh-key")      # Replace with path to your SSH private key file (used for provisioning)
 ddns_host         = "yourhost.com"  # Replace with your DDNS hostname (leave empty "" if not using DDNS)
 
+# Pi-hole
+pihole_upstream_dns = ["1.1.1.1", "1.0.0.1"]
+pihole_dnssec       = false
+# pihole_web_password = "pick-something"  # Unset = a random password is generated; read it with `sudo cat /root/pihole-web-password`
+
+# WireGuard
+wireguard_address = "10.182.229.1/24"
+wireguard_subnet  = "10.182.229.0/24"
+wireguard_port    = 51820
+wireguard_mtu     = 1280
+
+# Initial peers, created with `pivpn add` during provisioning. Only created
+# when the client config is missing, so re-applying never overwrites a key in
+# use. Manage peers afterwards on the box: `pivpn add`, `pivpn -qr <name>`,
+# `pivpn -c`, `pivpn -r <name>`.
+wireguard_clients = [
+  { name = "laptop", ip = "10.182.229.2" },
+  # { name = "phone", ip = "10.182.229.3" },
+]
+
 # Optional overrides
-# instance_shape   = "VM.Standard.E2.1.Micro"  # Default value, can be changed if needed
+# instance_shape      = "VM.Standard.E2.1.Micro" # Default value, can be changed if needed
+# ssh_port            = 22
+# reboot_after_setup  = true
+# ddns_install_oci_cli = true
+# pivpn_version       = "v4.11.1"

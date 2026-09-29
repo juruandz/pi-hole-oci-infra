@@ -13,6 +13,10 @@ crash.*.log
 *.tfvars
 *.tfvars.json
 
+# Exclude sensitive key files
+*.key
+*.key.pub
+
 # Ignore override files as they are usually used to override resources locally
 override.tf
 override.tf.json
