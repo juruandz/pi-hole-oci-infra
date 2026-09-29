@@ -1,13 +1,14 @@
 # Pi-hole and WireGuard on OCI
 
-Infrastructure as Code for a Pi-hole v6 DNS server with WireGuard VPN on an Oracle
-Cloud Infrastructure Always Free `VM.Standard.E2.1.Micro` instance.
+Infrastructure as Code for a Pi-hole v6 DNS server with a PiVPN-managed
+WireGuard VPN on an Oracle Cloud Infrastructure Always Free
+`VM.Standard.E2.1.Micro` instance.
 
 Terraform builds the network (VCN, subnet, internet gateway, route table, a
 reserved public IP) and the instance. `scripts/setup.py` then provisions the
-server over SSH: Pi-hole v6, WireGuard with generated client configs, fail2ban,
-a weekly reboot check, and optionally a DDNS job that keeps the security list
-pointed at your home IP.
+server over SSH: Pi-hole v6, PiVPN (WireGuard mode) plus its initial clients,
+fail2ban, a weekly reboot check, and optionally a DDNS job that keeps the
+security list pointed at your home IP.
 
 ## Repository layout
 
@@ -52,18 +53,19 @@ Create `terraform/terraform.tfvars` (gitignored) starting from
 | `wireguard_subnet` | `10.182.229.0/24` | Used for the NAT/MASQUERADE rule. |
 | `wireguard_port` | `51820` | WireGuard UDP port. |
 | `wireguard_mtu` | `1280` | 1280 avoids fragmentation on mobile clients. |
-| `wireguard_clients` | `[]` | Peers to generate. See below. |
+| `wireguard_clients` | `[]` | **Initial** PiVPN clients. See below. |
+| `pivpn_version` | `v4.11.1` | PiVPN release to install (pinned git tag). |
 | `ddns_install_oci_cli` | `true` | Install the OCI CLI in a venv on the instance. |
 | `reboot_after_setup` | `true` | Reboot once provisioning finishes. |
 
-`wireguard_clients` entries take `name`, `ip`, and an optional `allowed_ips`.
-Keypairs and preshared keys are generated **on the instance**, so the private
-keys never pass through Terraform:
+`wireguard_clients` entries take `name` and `ip`. They are created once with
+`pivpn add`, and only when they are not already peers, so a re-apply never
+overwrites a key that is in use:
 
 ```hcl
 wireguard_clients = [
-  { name = "laptop", ip = "10.182.229.2" },                                  # full tunnel
-  { name = "phone-dns", ip = "10.182.229.3", allowed_ips = "10.182.229.1/32" }, # DNS only
+  { name = "laptop", ip = "10.182.229.2" },
+  { name = "phone", ip = "10.182.229.3" },
 ]
 ```
 
@@ -85,12 +87,23 @@ Or with the Makefile: `make init`, `make plan`, `make apply`.
 - **Pi-hole admin UI**: `https://<public_ip>/admin` (self-signed certificate).
   Use `pihole_web_password`, or read the generated one with
   `ssh ubuntu@<ip> "sudo cat /root/pihole-web-password"`.
-- **WireGuard client configs** live on the server at
-  `/etc/wireguard/configs/<name>.conf`, mode 600:
+- **WireGuard is managed by PiVPN, not by Terraform.** Configs live in
+  `/etc/wireguard/configs/` and peers are added and removed on the instance:
 
-  ```bash
-  ssh ubuntu@<public_ip> "sudo cat /etc/wireguard/configs/laptop.conf"
-  ```
+  | Task | Command |
+  | --- | --- |
+  | Add a client | `sudo pivpn add` (prompts) or `sudo pivpn add -n laptop -ip 10.182.229.4` |
+  | Show a QR code | `pivpn -qr laptop` |
+  | List clients / connected peers | `pivpn -l` / `pivpn -c` |
+  | Remove / disable / enable | `pivpn -r laptop` / `pivpn -off laptop` / `pivpn -on laptop` |
+
+  Fetch a config with
+  `ssh ubuntu@<public_ip> "sudo cat /etc/wireguard/configs/laptop.conf"`.
+
+  PiVPN is pinned to the `var.pivpn_version` git tag under
+  `/usr/local/src/pivpn`, so `pivpn -up` is not expected to work — a detached
+  HEAD cannot `git pull`. Bump `pivpn_version` and re-apply instead, or run
+  `git -C /usr/local/src/pivpn checkout master` on the box first.
 
 - Useful outputs: `public_ip`, `ssh_command`, `ddns_security_list_id`,
   `availability_domain` (`terraform output`).
@@ -145,7 +158,11 @@ follow a home IP change. A freshly uploaded OCI API key can also return
 - WireGuard `51820/udp` is world-open by necessity; every peer requires a
   preshared key.
 - fail2ban bans repeated SSH authentication failures for a week (`recidive`).
-- `/etc/wireguard/wg0.conf` and the generated client configs are root-only (`600`).
+- PiVPN writes `/etc/wireguard/wg0.conf` and `/etc/wireguard/configs/*` as
+  `root:root` mode `644` (PiVPN's own default, and what the old server has).
+  The client configs contain private keys, so on a shared box tighten them with
+  `chmod 600 /etc/wireguard/configs/*.conf`; PiVPN does not reset that when a
+  peer is added.
 - Two earlier problems are fixed here: `tcp/22` used to be open to `0.0.0.0/0`,
   and the DDNS list opened the entire `53–443` range instead of just 53 and 443.
 
@@ -157,6 +174,10 @@ follow a home IP change. A freshly uploaded OCI API key can also return
   inventoried from scratch.
 - Pi-hole configuration (blocklists, local DNS records, users) is not managed by
   Terraform after installation.
+- WireGuard peer state lives in PiVPN on the instance (`wg0.conf` plus
+  `/etc/wireguard/configs/`). A rebuilt instance recreates only the clients
+  listed in `wireguard_clients`, so anything added later with `pivpn add` has to
+  be re-added — keep that list up to date if you want a rebuild to restore them.
 - The provisioner connects over SSH to the instance's public IP, so run `apply`
   from home or over the tunnel.
 
