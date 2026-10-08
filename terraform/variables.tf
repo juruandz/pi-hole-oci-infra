@@ -1,7 +1,7 @@
 variable "region" {
   description = "The OCI region to deploy resources into"
   type        = string
-  default     = "eu-stockholm-1" # Current region where existing VM is deployed
+  default     = "eu-stockholm-1"
 }
 
 variable "compartment_id" {

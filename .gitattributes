@@ -15,5 +15,6 @@
 *.md           text eol=lf
 *.example      text eol=lf
 Taskfile.yml   text eol=lf
+LICENSE        text eol=lf
 .gitattributes text eol=lf
 .gitignore     text eol=lf
