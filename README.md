@@ -171,10 +171,15 @@ follow a home IP change. A freshly uploaded OCI API key can also return
 
 ## Known limitations
 
-- **State is local and gitignored.** `terraform/terraform.tfstate` is the only
-  record of what exists — back it up, or configure a remote backend, before you
-  rely on it. An earlier run of this repository lost its state and had to be
-  inventoried from scratch.
+- **State is local and gitignored, by design.** This is a single-operator
+  project, so there is no shared or locked backend to configure — Terraform
+  keeps state in `terraform/terraform.tfstate` on your machine. That file is the
+  only record of what exists, so **copy it somewhere safe after each apply**. If
+  you lose it, re-applying builds a *second* stack instead of reconciling the
+  existing one; an earlier run of this repository hit exactly that and had to be
+  inventoried by hand. If you want off-box state history, the
+  [OCI Object Storage backend](https://developer.hashicorp.com/terraform/language/backend/oci)
+  is one option — a commented example lives in `terraform/provider.tf`.
 - Pi-hole configuration (blocklists, local DNS records, users) is not managed by
   Terraform after installation.
 - WireGuard peer state lives in PiVPN on the instance (`wg0.conf` plus
