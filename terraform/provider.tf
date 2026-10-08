@@ -1,6 +1,5 @@
 terraform {
-  # optional() object attributes in var.wireguard_clients require Terraform 1.3+;
-  # 1.5 is required for the configuration as documented.
+  # Floor for the configuration as documented; enforced at plan/apply time.
   required_version = ">= 1.5"
 
   # State is LOCAL by default: this is a single-operator project, so no shared

@@ -19,8 +19,10 @@ Note:
  - The API key pass phrase is not stored in ~/.oci/config. It is read at
    runtime from a root-only file (see --passphrase-file) via sudo, or taken
    from OCI_CLI_PASSPHRASE if that is already set.
- - Default values in the script match the original shell script; override
-   via command line flags if needed.
+ - The deployment-specific defaults (DEFAULT_DDNS_HOST and
+   DEFAULT_SECURITY_LIST_OCID) are deliberately blank; the cron entry written
+   by scripts/setup.py always passes --host and --security-list-ocid
+   explicitly. Other defaults can be overridden via command line flags.
 
 Example:
   python3 update_ddns.py --host example.ddns.net \

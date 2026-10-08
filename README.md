@@ -18,12 +18,14 @@ security list pointed at your home IP.
 | `scripts/setup.py` | Provisioning entry point, executed on the instance by `null_resource.setup_provisioner`. |
 | `scripts/conf/` | Files copied to the instance (the DDNS updater and the reboot check). |
 | `Taskfile.yml` | Convenience wrappers around the Terraform commands ([Task](https://taskfile.dev)). |
+| `.github/workflows/` | CI: `terraform fmt`/`validate` plus provisioning-script syntax checks. |
+| `LICENSE` | MIT. |
 
 ## Prerequisites
 
 1. An OCI tenancy where you can create networking and compute resources.
 2. [Terraform](https://developer.hashicorp.com/terraform/install) **1.5 or newer**
-   (the WireGuard client variable uses `optional()` object attributes).
+   (`terraform/provider.tf` enforces `required_version = ">= 1.5"`).
 3. OCI API credentials in `~/.oci/config`. The Terraform provider reads these
    directly; the OCI CLI itself is only needed for the DDNS credentials step below.
 4. An SSH keypair for the instance.
@@ -108,8 +110,8 @@ all of the available shortcuts.
   HEAD cannot `git pull`. Bump `pivpn_version` and re-apply instead, or run
   `git -C /usr/local/src/pivpn checkout master` on the box first.
 
-- Useful outputs: `public_ip`, `ssh_command`, `ddns_security_list_id`,
-  `availability_domain` (`terraform output`).
+- Useful outputs: `public_ip`, `private_ip`, `instance_id`, `ssh_command`,
+  `ddns_security_list_id`, `availability_domain` (`terraform output`).
 
 ### DDNS credentials (manual, by design)
 
