@@ -6,11 +6,15 @@ resource "oci_core_vcn" "pihole_vcn" {
   dns_label      = "piholevcn"
 }
 
-resource "oci_core_security_list" "default_security_list" {
+# Security list for traffic that must be reachable from anywhere on the
+# internet (WireGuard, a couple of ICMP replies). Despite the name OCI gives
+# it, this is NOT the VCN's auto-created default list: that resource is created
+# by the VCN and nothing is attached to it here. This one is a separate list,
+# called out by its display_name, attached to the subnet below.
+resource "oci_core_security_list" "world_security_list" {
   compartment_id = var.compartment_id
   vcn_id         = oci_core_vcn.pihole_vcn.id
-  # manage_default_resource_id = oci_core_vcn.pihole_vcn.default_security_list_id
-  display_name = "default_security_list"
+  display_name   = "pihole-world-security-list"
 
   # NOTE: deliberately NO SSH rule here. Anything that depends on the home IP
   # (SSH, DNS, admin UI, ping) lives in the DDNS-managed security list below,
@@ -167,7 +171,7 @@ resource "oci_core_subnet" "subnet" {
   dns_label      = "piholesubnet"
 
   security_list_ids = [
-    oci_core_security_list.default_security_list.id,
+    oci_core_security_list.world_security_list.id,
     oci_core_security_list.ddns_security_list.id
   ]
   route_table_id = oci_core_route_table.route_table.id
