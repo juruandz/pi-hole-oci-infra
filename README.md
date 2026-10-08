@@ -174,7 +174,8 @@ follow a home IP change. A freshly uploaded OCI API key can also return
 - **State is local and gitignored, by design.** This is a single-operator
   project, so there is no shared or locked backend to configure — Terraform
   keeps state in `terraform/terraform.tfstate` on your machine. That file is the
-  only record of what exists, so **copy it somewhere safe after each apply**. If
+  only record of what exists, so **copy it somewhere safe after each apply**
+  (`task backup-state` snapshots it to `terraform/backups/`). If
   you lose it, re-applying builds a *second* stack instead of reconciling the
   existing one; an earlier run of this repository hit exactly that and had to be
   inventoried by hand. If you want off-box state history, the

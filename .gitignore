@@ -13,6 +13,9 @@ crash.*.log
 *.tfvars
 *.tfvars.json
 
+# Local Terraform state backups (task backup-state)
+terraform/backups/
+
 # Exclude sensitive key files
 *.key
 *.key.pub

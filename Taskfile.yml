@@ -76,6 +76,16 @@ tasks:
     cmds:
       - '{{.TF}} state list'
 
+  backup-state:
+    desc: Copy terraform.tfstate to terraform/backups/ with a timestamp
+    dir: '{{.TERRAFORM_DIR}}'
+    cmds:
+      - cmd: >-
+          powershell -NoProfile -Command "New-Item -ItemType Directory -Force backups | Out-Null; Copy-Item terraform.tfstate (Join-Path backups ('terraform.tfstate.' + (Get-Date -Format yyyyMMdd-HHmmss)))"
+        platforms: [windows]
+      - cmd: mkdir -p backups && cp terraform.tfstate "backups/terraform.tfstate.$(date +%Y%m%d-%H%M%S)"
+        platforms: [linux, darwin]
+
   output:
     desc: Show the Terraform outputs
     dir: '{{.TERRAFORM_DIR}}'
