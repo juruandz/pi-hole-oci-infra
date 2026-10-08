@@ -1,0 +1,121 @@
+version: '3'
+
+# Convenience wrappers around the Terraform commands for this project.
+# Run `task` (or `task --list`) to see every available task.
+
+vars:
+  TERRAFORM_DIR: terraform
+  TF: terraform
+
+tasks:
+  default:
+    desc: List the available tasks
+    silent: true
+    cmds:
+      - task --list
+
+  init:
+    desc: Initialize Terraform (download providers, set up state)
+    dir: '{{.TERRAFORM_DIR}}'
+    cmds:
+      - '{{.TF}} init'
+
+  validate:
+    desc: Validate the Terraform configuration
+    dir: '{{.TERRAFORM_DIR}}'
+    cmds:
+      - '{{.TF}} validate'
+
+  format:
+    desc: Format the Terraform files
+    dir: '{{.TERRAFORM_DIR}}'
+    cmds:
+      - '{{.TF}} fmt -recursive'
+
+  plan:
+    desc: Plan infrastructure changes (writes tfplan)
+    dir: '{{.TERRAFORM_DIR}}'
+    cmds:
+      - '{{.TF}} plan -out=tfplan'
+
+  apply:
+    desc: Apply the plan (always plans first, so tfplan is never stale)
+    deps: [plan]
+    dir: '{{.TERRAFORM_DIR}}'
+    cmds:
+      - '{{.TF}} apply tfplan'
+
+  destroy:
+    desc: Destroy all infrastructure
+    dir: '{{.TERRAFORM_DIR}}'
+    prompt: 'Destroy all infrastructure? This cannot be undone.'
+    cmds:
+      - '{{.TF}} destroy'
+
+  rebuild:
+    desc: Destroy everything and rebuild from scratch
+    dir: '{{.TERRAFORM_DIR}}'
+    prompt:
+      - 'This DESTROYS all infrastructure, deletes the local state, and rebuilds it.'
+      - 'Continue?'
+    cmds:
+      - '{{.TF}} destroy -auto-approve'
+      - cmd: cmd /c del /q /f terraform.tfstate terraform.tfstate.backup .terraform.lock.hcl
+        platforms: [windows]
+        ignore_error: true
+      - cmd: rm -f terraform.tfstate terraform.tfstate.backup .terraform.lock.hcl
+        platforms: [linux, darwin]
+        ignore_error: true
+      - task: init
+      - task: apply
+
+  state:
+    desc: List the resources tracked in the Terraform state
+    aliases: [resources]
+    dir: '{{.TERRAFORM_DIR}}'
+    cmds:
+      - '{{.TF}} state list'
+
+  output:
+    desc: Show the Terraform outputs
+    dir: '{{.TERRAFORM_DIR}}'
+    cmds:
+      - '{{.TF}} output'
+
+  console:
+    desc: Open the Terraform console for debugging (type exit to quit)
+    dir: '{{.TERRAFORM_DIR}}'
+    cmds:
+      - '{{.TF}} console'
+
+  taint:
+    desc: 'Mark a resource for recreation (usage: task taint RESOURCE=<address>)'
+    dir: '{{.TERRAFORM_DIR}}'
+    requires:
+      vars: [RESOURCE]
+    prompt: 'Taint "{{.RESOURCE}}"? It will be destroyed and recreated on the next apply.'
+    cmds:
+      - '{{.TF}} taint {{.RESOURCE}}'
+
+  clean:
+    desc: Remove the saved plan and lock file (state is preserved)
+    dir: '{{.TERRAFORM_DIR}}'
+    cmds:
+      - cmd: cmd /c del /q /f tfplan .terraform.lock.hcl
+        platforms: [windows]
+        ignore_error: true
+      - cmd: rm -f tfplan .terraform.lock.hcl
+        platforms: [linux, darwin]
+        ignore_error: true
+
+  clean-state:
+    desc: Delete the local Terraform state files (DESTRUCTIVE)
+    dir: '{{.TERRAFORM_DIR}}'
+    prompt: 'Delete the local state files? Terraform will forget every managed resource.'
+    cmds:
+      - cmd: cmd /c del /q /f terraform.tfstate terraform.tfstate.backup
+        platforms: [windows]
+        ignore_error: true
+      - cmd: rm -f terraform.tfstate terraform.tfstate.backup
+        platforms: [linux, darwin]
+        ignore_error: true

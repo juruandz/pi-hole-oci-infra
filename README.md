@@ -17,7 +17,7 @@ security list pointed at your home IP.
 | `terraform/` | Terraform root module. Run Terraform from this directory. |
 | `scripts/setup.py` | Provisioning entry point, executed on the instance by `null_resource.setup_provisioner`. |
 | `scripts/conf/` | Files copied to the instance (the DDNS updater and the reboot check). |
-| `Makefile` | Convenience wrappers around the Terraform commands. |
+| `Taskfile.yml` | Convenience wrappers around the Terraform commands ([Task](https://taskfile.dev)). |
 
 ## Prerequisites
 
@@ -29,6 +29,8 @@ security list pointed at your home IP.
 4. An SSH keypair for the instance.
 5. Optional: a DDNS hostname (for example an Asus router's `asuscomm.com` name).
    Required if you want the security list to follow a changing home IP.
+6. Optional: [Task](https://taskfile.dev/installation) for the shortcut commands
+   below. Run `task --list` to see everything it provides.
 
 ## Configuration
 
@@ -78,7 +80,8 @@ terraform plan
 terraform apply
 ```
 
-Or with the Makefile: `make init`, `make plan`, `make apply`.
+Or with Task: `task init`, `task plan`, `task apply`. Run `task --list` to see
+all of the available shortcuts.
 
 ## After the apply
 
